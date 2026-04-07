@@ -1,11 +1,12 @@
 name: splitspeak
 options:
   bundleIdPrefix: fun.withus
+  deploymentTarget:
+    iOS: "17.0"
 targets:
   splitspeak:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
     sources: [App]
     dependencies:
       - target: SCTCore
