@@ -4,11 +4,10 @@ import SCTCore
 import SCTAudio
 
 struct ContentView: View {
-    @State private var leftSink: StereoOutputSink?
-    @State private var rightSink: StereoOutputSink?
     @State private var stereoSink: StereoOutputSink?
     @State private var isEngineRunning = false
     @State private var statusMessage = "Tap a button to test audio"
+    @State private var interruptionHandler: NSObject?
 
     var body: some View {
         VStack(spacing: 30) {
@@ -79,32 +78,112 @@ struct ContentView: View {
 
     private func initializeEngines() {
         Task {
+            let sink = StereoOutputSink()
+            print("Starting audio engine...")
+
+            // Set up audio session with notification for route changes
+            let session = AVAudioSession.sharedInstance()
             do {
-                // Configure audio session for playback
-                let session = AVAudioSession.sharedInstance()
                 try session.setCategory(.playback, mode: .default)
                 try session.setActive(true)
 
-                // Initialize stereo sink and start engine
-                let sink = StereoOutputSink()
+                // Register for interruption and route change notifications
+                NotificationCenter.default.addObserver(
+                    forName: AVAudioSession.interruptionNotification,
+                    object: session,
+                    queue: .main
+                ) { [self] notification in
+                    Task {
+                        await handleInterruption(notification, sink: sink)
+                    }
+                }
+
+                NotificationCenter.default.addObserver(
+                    forName: AVAudioSession.routeChangeNotification,
+                    object: session,
+                    queue: .main
+                ) { [self] notification in
+                    Task {
+                        await handleRouteChange(notification, sink: sink)
+                    }
+                }
+
                 try await sink.start()
+                print("Audio engine started successfully")
                 stereoSink = sink
                 isEngineRunning = true
                 statusMessage = "Ready! Tap a button to test."
             } catch {
+                print("ERROR in initializeEngines: \(error)")
                 statusMessage = "Error: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func handleInterruption(_ notification: Notification, sink: StereoOutputSink) async {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        switch type {
+        case .began:
+            print("Audio interruption began")
+            isEngineRunning = false
+            statusMessage = "Audio interrupted..."
+        case .ended:
+            print("Audio interruption ended, restarting engine...")
+            do {
+                try await sink.start()
+                isEngineRunning = true
+                statusMessage = "Ready! Tap a button to test."
+            } catch {
+                print("ERROR restarting engine: \(error)")
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification, sink: StereoOutputSink) async {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        switch reason {
+        case .newDeviceAvailable, .oldDeviceUnavailable:
+            print("Audio route changed: \(reason), restarting engine...")
+            do {
+                try await sink.start()
+                isEngineRunning = true
+                statusMessage = "Ready! Tap a button to test."
+            } catch {
+                print("ERROR restarting engine after route change: \(error)")
+            }
+        default:
+            break
         }
     }
 
     private func playLeftChannel() {
         Task {
             guard let sink = stereoSink else { return }
+
+            // Try to restart engine if needed
+            do {
+                try await sink.start()
+            } catch {}
+
             statusMessage = "Playing left ear (440Hz)..."
             do {
-                try await sink.playTone(on: .left, frequencyHz: 440, durationSeconds: 1.0)
+                try await sink.playTone(on: .left, frequencyHz: 440, durationSeconds: 0.5)
+                try await Task.sleep(nanoseconds: 600_000_000)
                 statusMessage = "Left ear played!"
             } catch {
+                print("ERROR playing left: \(error)")
                 statusMessage = "Error: \(error.localizedDescription)"
             }
         }
@@ -113,11 +192,19 @@ struct ContentView: View {
     private func playRightChannel() {
         Task {
             guard let sink = stereoSink else { return }
+
+            // Try to restart engine if needed
+            do {
+                try await sink.start()
+            } catch {}
+
             statusMessage = "Playing right ear (880Hz)..."
             do {
-                try await sink.playTone(on: .right, frequencyHz: 880, durationSeconds: 1.0)
+                try await sink.playTone(on: .right, frequencyHz: 880, durationSeconds: 0.5)
+                try await Task.sleep(nanoseconds: 600_000_000)
                 statusMessage = "Right ear played!"
             } catch {
+                print("ERROR playing right: \(error)")
                 statusMessage = "Error: \(error.localizedDescription)"
             }
         }
@@ -126,11 +213,17 @@ struct ContentView: View {
     private func playBothChannels() {
         Task {
             guard let sink = stereoSink else { return }
+
+            // Try to restart engine if needed
+            do {
+                try await sink.start()
+            } catch {}
+
             statusMessage = "Playing both ears (different pitches)..."
             do {
                 // Generate left channel: 440Hz tone
                 let sampleRate: Double = 44100
-                let duration: Double = 1.0
+                let duration: Double = 0.5
                 let frameCount = Int(sampleRate * duration)
 
                 var leftData = Data()
@@ -145,6 +238,7 @@ struct ContentView: View {
                 }
 
                 try await sink.playStereo(leftData: leftData, rightData: rightData, sampleRate: sampleRate)
+                try await Task.sleep(nanoseconds: 600_000_000)
                 statusMessage = "Stereo test complete!"
             } catch {
                 statusMessage = "Error: \(error.localizedDescription)"

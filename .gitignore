@@ -11,6 +11,7 @@ DerivedData/
 #
 # Add this line if you want to avoid committing the compiled package artifacts
 .build/
+.swiftpm/
 
 # XcodeGen
 *.xcodeproj

@@ -21,6 +21,7 @@ public actor StereoOutputSink {
     private let engine: AVAudioEngine
     private var playerNode: AVAudioPlayerNode?
     private var isConfigured = false
+    private var scheduledBuffer: AVAudioPCMBuffer?  // Keep buffer alive during playback
 
     public init() {
         self.engine = AVAudioEngine()
@@ -28,27 +29,44 @@ public actor StereoOutputSink {
 
     /// Starts the audio engine. Must be called before playing audio.
     public func start() throws {
-        guard !isConfigured else { return }
+        // Check if engine is actually running - if so, nothing to do
+        if engine.isRunning {
+            print("[StereoOutputSink] engine already running, skipping start")
+            return
+        }
+
+        print("[StereoOutputSink] start() called, engine is not running, need to start it")
+        isConfigured = false
+
+        // Stop any existing player node first
+        if let existingNode = playerNode {
+            existingNode.stop()
+            engine.detach(existingNode)
+            playerNode = nil
+        }
 
         playerNode = AVAudioPlayerNode()
         guard let playerNode else {
+            print("[StereoOutputSink] ERROR: playerNode is nil")
             throw StereoOutputError.playerNodeNotAdded
         }
+        print("[StereoOutputSink] playerNode created")
 
         engine.attach(playerNode)
+        print("[StereoOutputSink] playerNode attached to engine")
 
-        // Get the main mixer output format (stereo on iOS)
-        let format = engine.mainMixerNode.outputFormat(forBus: 0)
-
-        // Connect player to main mixer
-        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+        // Connect player to main mixer using default format (nil = engine picks best format)
+        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        print("[StereoOutputSink] playerNode connected to mainMixerNode")
 
         // Attach and start the engine
         engine.prepare()
         do {
             try engine.start()
             isConfigured = true
+            print("[StereoOutputSink] engine started successfully")
         } catch {
+            print("[StereoOutputSink] ERROR starting engine: \(error)")
             throw StereoOutputError.engineStartFailed(error.localizedDescription)
         }
     }
@@ -60,6 +78,7 @@ public actor StereoOutputSink {
         if let playerNode {
             engine.detach(playerNode)
         }
+        scheduledBuffer = nil
         isConfigured = false
     }
 
@@ -74,19 +93,25 @@ public actor StereoOutputSink {
         frequencyHz: Double = 440,
         durationSeconds: Double = 0.5
     ) async throws {
+        print("[StereoOutputSink] playTone called, isConfigured: \(isConfigured), playerNode: \(playerNode != nil)")
+
         guard isConfigured, let playerNode else {
+            print("[StereoOutputSink] ERROR: engine not running")
             throw StereoOutputError.engineNotRunning
         }
 
         // Create a stereo buffer with the tone
         let sampleRate: Double = 44100
         let frameCount = AVAudioFrameCount(sampleRate * durationSeconds)
+        print("[StereoOutputSink] Creating buffer: sampleRate=\(sampleRate), frameCount=\(frameCount)")
 
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+            print("[StereoOutputSink] ERROR: could not create format")
             throw StereoOutputError.bufferCreationFailed
         }
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            print("[StereoOutputSink] ERROR: could not create buffer")
             throw StereoOutputError.bufferCreationFailed
         }
 
@@ -95,6 +120,7 @@ public actor StereoOutputSink {
         // Fill the buffer with a sine wave
         guard let leftChannel = buffer.floatChannelData?[0],
               let rightChannel = buffer.floatChannelData?[1] else {
+            print("[StereoOutputSink] ERROR: could not get channel data")
             throw StereoOutputError.bufferCreationFailed
         }
 
@@ -113,9 +139,18 @@ public actor StereoOutputSink {
             }
         }
 
-        // Schedule and play
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
-        playerNode.play()
+        print("[StereoOutputSink] Buffer filled, scheduling and playing on channel: \(channel)")
+        // Keep buffer alive during playback - store in instance variable
+        scheduledBuffer = buffer
+
+        // Use completion handler version - more reliable in test contexts
+        let didSchedule = await withCheckedContinuation { continuation in
+            playerNode.scheduleBuffer(buffer) {
+                continuation.resume()
+            }
+            playerNode.play()
+        }
+        print("[StereoOutputSink] playback started, scheduled: \(didSchedule)")
     }
 
     /// Plays a stereo audio buffer where left and right channels contain independent audio data.
@@ -162,7 +197,12 @@ public actor StereoOutputSink {
             }
         }
 
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
-        playerNode.play()
+        scheduledBuffer = buffer
+        let _ = await withCheckedContinuation { continuation in
+            playerNode.scheduleBuffer(buffer) {
+                continuation.resume()
+            }
+            playerNode.play()
+        }
     }
 }
