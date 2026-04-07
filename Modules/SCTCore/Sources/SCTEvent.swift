@@ -1,6 +1,6 @@
 import Foundation
 
-public enum SCTEvent: Equatable {
+public enum SCTEvent: Equatable, Sendable {
     // Session
     case sessionStarted(sessionId: String)
     case sessionStopped(sessionId: String)

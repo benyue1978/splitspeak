@@ -1,22 +1,22 @@
 import Foundation
 
-public enum ParticipantRole: String, Equatable {
+public enum ParticipantRole: String, Equatable, Sendable {
     case userA
     case userB
 }
 
-public enum AudioChannel: String, Equatable {
+public enum AudioChannel: String, Equatable, Sendable {
     case left
     case right
 }
 
-public enum SessionState: String, Equatable {
+public enum SessionState: String, Equatable, Sendable {
     case idle
     case active
     case error
 }
 
-public struct Participant: Equatable, Identifiable {
+public struct Participant: Equatable, Identifiable, Sendable {
     public let id: String
     public let role: ParticipantRole
     public let sourceLanguage: String
@@ -32,7 +32,7 @@ public struct Participant: Equatable, Identifiable {
     }
 }
 
-public struct Session: Equatable, Identifiable {
+public struct Session: Equatable, Identifiable, Sendable {
     public let id: String
     public let participants: [Participant]
     public var state: SessionState
