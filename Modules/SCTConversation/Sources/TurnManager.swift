@@ -71,7 +71,7 @@ public actor TurnManager {
     }
 
     /// Called when output phase begins (processors publish translation).
-    public func beginOutput() {
+    public func beginOutput() async {
         guard turnState == .processing else { return }
         turnState = .output
     }
@@ -79,10 +79,11 @@ public actor TurnManager {
     /// Called when turn ends.
     /// - Parameter speaker: The speaker whose turn is ending
     public func endTurn(speaker: ParticipantRole) async {
-        guard turnState == .output else {
+        guard turnState == .output, currentSpeaker == speaker else {
             // Fallback: reset to waiting from any state
             turnState = .waiting
             currentSpeaker = nil
+            await eventBus.publish(.turnEnded(speaker: speaker))
             return
         }
 

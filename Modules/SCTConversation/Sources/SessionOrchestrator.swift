@@ -56,27 +56,23 @@ public actor SessionOrchestrator {
     }
 
     /// Stops the current session.
-    public func stop() {
+    public func stop() async {
         guard let session = currentSession else { return }
 
         let sessionId = session.id
         currentSession = nil
         state = .idle
 
-        Task {
-            await eventBus.publish(.sessionStopped(sessionId: sessionId))
-        }
+        await eventBus.publish(.sessionStopped(sessionId: sessionId))
     }
 
     /// Reports an error and transitions to error state.
     /// - Parameter message: Error description
-    public func reportError(_ message: String) {
+    public func reportError(_ message: String) async {
         guard state == .active else { return }
         state = .error
 
-        Task {
-            await eventBus.publish(.errorOccurred(message))
-        }
+        await eventBus.publish(.errorOccurred(message))
     }
 
     /// Returns the current session, if any.

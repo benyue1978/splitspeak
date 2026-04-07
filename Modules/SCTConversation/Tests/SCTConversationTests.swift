@@ -169,7 +169,7 @@ final class SCTConversationTests: XCTestCase {
 
         await turnManager.selectSpeaker("userA")
         await turnManager.injectText("Hello", speaker: .userA)
-        await turnManager.beginOutput()
+        await turnManager.beginOutput()  // Note: beginOutput is now async
 
         let state = await turnManager.turnState
         XCTAssertEqual(state, .output)
