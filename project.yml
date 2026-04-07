@@ -8,21 +8,22 @@ targets:
     deploymentTarget: "17.0"
     sources: [App]
     dependencies:
-      - package: SCTCore
-      - package: SCTAudio
+      - target: SCTCore
+      - target: SCTAudio
     settings:
-      DEVELOPMENT_TEAM: "" # Leave empty for now, to be replaced later
+      GENERATE_INFOPLIST_FILE: YES
+      DEVELOPMENT_TEAM: ""
   SCTAudio:
     type: framework
     platform: iOS
     sources: [Modules/SCTAudio/Sources]
+    dependencies:
+      - target: SCTCore
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
   SCTCore:
     type: framework
     platform: iOS
     sources: [Modules/SCTCore/Sources]
-
-packages:
-  SCTCore:
-    path: .
-  SCTAudio:
-    path: .
+    settings:
+      GENERATE_INFOPLIST_FILE: YES

@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import SCTCore
+import SCTAudio
 
 struct ContentView: View {
     @State private var leftSink: StereoOutputSink?
