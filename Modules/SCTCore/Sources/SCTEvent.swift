@@ -4,6 +4,10 @@ public enum SCTEvent: Equatable, Sendable {
     // Session
     case sessionStarted(sessionId: String)
     case sessionStopped(sessionId: String)
+
+    // Turn Management
+    case turnStarted(speaker: ParticipantRole)
+    case turnEnded(speaker: ParticipantRole)
     case speakerSelected(participantId: String)
     
     // Input

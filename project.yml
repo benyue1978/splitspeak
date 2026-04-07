@@ -28,3 +28,11 @@ targets:
     sources: [Modules/SCTCore/Sources]
     settings:
       GENERATE_INFOPLIST_FILE: YES
+  SCTConversation:
+    type: framework
+    platform: iOS
+    sources: [Modules/SCTConversation/Sources]
+    dependencies:
+      - target: SCTCore
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
