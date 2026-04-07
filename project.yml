@@ -9,8 +9,13 @@ targets:
     sources: [App]
     dependencies:
       - package: SCTCore
+      - package: SCTAudio
     settings:
       DEVELOPMENT_TEAM: "" # Leave empty for now, to be replaced later
+  SCTAudio:
+    type: framework
+    platform: iOS
+    sources: [Modules/SCTAudio/Sources]
   SCTCore:
     type: framework
     platform: iOS
@@ -18,4 +23,6 @@ targets:
 
 packages:
   SCTCore:
+    path: .
+  SCTAudio:
     path: .
