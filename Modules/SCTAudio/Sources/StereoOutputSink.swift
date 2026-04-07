@@ -8,6 +8,7 @@ public enum StereoOutputError: Error, Sendable {
     case playerNodeNotAdded
     case bufferCreationFailed
     case engineStartFailed(String)
+    case invalidSampleRate
 }
 
 /// Manages stereo audio output to left and right channels using AVAudioEngine.
@@ -18,109 +19,84 @@ public enum StereoOutputError: Error, Sendable {
 /// - Right channel only: plays audio only in the right ear
 /// - Stereo: plays audio in both ears (same content)
 public actor StereoOutputSink {
+    // Note: AVAudioEngine and AVAudioPlayerNode are Sendable on Apple platforms
     private let engine: AVAudioEngine
     private var playerNode: AVAudioPlayerNode?
     private var isConfigured = false
-    private var scheduledBuffer: AVAudioPCMBuffer?  // Keep buffer alive during playback
+    // Keep buffer alive during playback - only one buffer at a time supported
+    private var scheduledBuffer: AVAudioPCMBuffer?
+
+    /// Default sample rate for audio playback
+    public static let defaultSampleRate: Double = 44100
 
     public init() {
         self.engine = AVAudioEngine()
     }
 
     /// Starts the audio engine. Must be called before playing audio.
+    /// Safe to call multiple times - will no-op if already running.
     public func start() throws {
-        // Check if engine is actually running - if so, nothing to do
-        if engine.isRunning {
-            print("[StereoOutputSink] engine already running, skipping start")
-            return
-        }
+        guard !engine.isRunning else { return }
 
-        print("[StereoOutputSink] start() called, engine is not running, need to start it")
-        isConfigured = false
-
-        // Stop any existing player node first
+        // Clean up any existing player node
         if let existingNode = playerNode {
             existingNode.stop()
             engine.detach(existingNode)
             playerNode = nil
         }
 
-        playerNode = AVAudioPlayerNode()
-        guard let playerNode else {
-            print("[StereoOutputSink] ERROR: playerNode is nil")
-            throw StereoOutputError.playerNodeNotAdded
-        }
-        print("[StereoOutputSink] playerNode created")
+        let node = AVAudioPlayerNode()
+        engine.attach(node)
 
-        engine.attach(playerNode)
-        print("[StereoOutputSink] playerNode attached to engine")
+        // Connect to main mixer with default format
+        engine.connect(node, to: engine.mainMixerNode, format: nil)
 
-        // Connect player to main mixer using default format (nil = engine picks best format)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
-        print("[StereoOutputSink] playerNode connected to mainMixerNode")
-
-        // Attach and start the engine
         engine.prepare()
-        do {
-            try engine.start()
-            isConfigured = true
-            print("[StereoOutputSink] engine started successfully")
-        } catch {
-            print("[StereoOutputSink] ERROR starting engine: \(error)")
-            throw StereoOutputError.engineStartFailed(error.localizedDescription)
-        }
+        try engine.start()
+        playerNode = node
+        isConfigured = true
     }
 
     /// Stops the audio engine and releases resources.
     public func stop() {
         playerNode?.stop()
         engine.stop()
-        if let playerNode {
-            engine.detach(playerNode)
+        if let node = playerNode {
+            engine.detach(node)
         }
+        playerNode = nil
         scheduledBuffer = nil
         isConfigured = false
     }
 
-    /// Plays a tone burst on the specified channel(s).
+    /// Plays a tone burst on the specified channel.
     ///
     /// - Parameters:
-    ///   - channel: The target channel(s) for audio output
+    ///   - channel: The target channel for audio output (.left or .right)
     ///   - frequencyHz: Frequency of the tone in Hz (default 440 = A4)
     ///   - durationSeconds: Duration of the tone (default 0.5s)
+    ///   - sampleRate: Sample rate for tone generation (default 44100)
     public func playTone(
         on channel: AudioChannel,
         frequencyHz: Double = 440,
-        durationSeconds: Double = 0.5
+        durationSeconds: Double = 0.5,
+        sampleRate: Double = StereoOutputSink.defaultSampleRate
     ) async throws {
-        print("[StereoOutputSink] playTone called, isConfigured: \(isConfigured), playerNode: \(playerNode != nil)")
-
         guard isConfigured, let playerNode else {
-            print("[StereoOutputSink] ERROR: engine not running")
             throw StereoOutputError.engineNotRunning
         }
 
-        // Create a stereo buffer with the tone
-        let sampleRate: Double = 44100
         let frameCount = AVAudioFrameCount(sampleRate * durationSeconds)
-        print("[StereoOutputSink] Creating buffer: sampleRate=\(sampleRate), frameCount=\(frameCount)")
 
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
-            print("[StereoOutputSink] ERROR: could not create format")
-            throw StereoOutputError.bufferCreationFailed
-        }
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            print("[StereoOutputSink] ERROR: could not create buffer")
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
             throw StereoOutputError.bufferCreationFailed
         }
 
         buffer.frameLength = frameCount
 
-        // Fill the buffer with a sine wave
         guard let leftChannel = buffer.floatChannelData?[0],
               let rightChannel = buffer.floatChannelData?[1] else {
-            print("[StereoOutputSink] ERROR: could not get channel data")
             throw StereoOutputError.bufferCreationFailed
         }
 
@@ -129,35 +105,31 @@ public actor StereoOutputSink {
 
             switch channel {
             case .left:
-                // Audio only on left channel
                 leftChannel[frame] = sample
                 rightChannel[frame] = 0
             case .right:
-                // Audio only on right channel
                 leftChannel[frame] = 0
                 rightChannel[frame] = sample
             }
         }
 
-        print("[StereoOutputSink] Buffer filled, scheduling and playing on channel: \(channel)")
-        // Keep buffer alive during playback - store in instance variable
+        // Keep buffer alive during playback
         scheduledBuffer = buffer
 
-        // Use completion handler version - more reliable in test contexts
-        let didSchedule = await withCheckedContinuation { continuation in
+        // Use completion handler for reliable playback
+        _ = await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
                 continuation.resume()
             }
             playerNode.play()
         }
-        print("[StereoOutputSink] playback started, scheduled: \(didSchedule)")
     }
 
-    /// Plays a stereo audio buffer where left and right channels contain independent audio data.
+    /// Plays stereo audio where left and right channels contain independent audio data.
     ///
     /// - Parameters:
-    ///   - leftData: Audio data (linear PCM) for the left channel
-    ///   - rightData: Audio data (linear PCM) for the right channel
+    ///   - leftData: Audio data (linear PCM Float32) for the left channel
+    ///   - rightData: Audio data (linear PCM Float32) for the right channel
     ///   - sampleRate: Sample rate of the audio data
     public func playStereo(
         leftData: Data,
@@ -170,11 +142,12 @@ public actor StereoOutputSink {
 
         let frameCount = AVAudioFrameCount(min(leftData.count, rightData.count) / MemoryLayout<Float>.size)
 
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+        guard frameCount > 0 else {
             throw StereoOutputError.bufferCreationFailed
         }
 
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
             throw StereoOutputError.bufferCreationFailed
         }
 
@@ -198,11 +171,22 @@ public actor StereoOutputSink {
         }
 
         scheduledBuffer = buffer
-        let _ = await withCheckedContinuation { continuation in
+        _ = await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
                 continuation.resume()
             }
             playerNode.play()
         }
+    }
+
+    /// Stops current playback without stopping the engine.
+    public func stopPlayback() {
+        playerNode?.stop()
+        scheduledBuffer = nil
+    }
+
+    /// Returns whether the audio engine is currently running.
+    public var isRunning: Bool {
+        engine.isRunning
     }
 }
