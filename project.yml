@@ -11,6 +11,8 @@ targets:
     dependencies:
       - target: SCTCore
       - target: SCTAudio
+      - target: SCTConversation
+      - target: SCTPipeline
     settings:
       GENERATE_INFOPLIST_FILE: YES
       DEVELOPMENT_TEAM: ""

@@ -27,7 +27,9 @@ public actor EventBus {
     /// Publish an event to all active subscribers.
     /// - Parameter event: The event to publish.
     public func publish(_ event: SCTEvent) {
-        for continuation in continuations.values {
+        // Snapshot continuations to avoid concurrent modification during iteration
+        let currentContinuations = Array(continuations.values)
+        for continuation in currentContinuations {
             continuation.yield(event)
         }
     }

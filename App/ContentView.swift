@@ -7,7 +7,8 @@ struct ContentView: View {
     @State private var stereoSink: StereoOutputSink?
     @State private var isEngineRunning = false
     @State private var statusMessage = "Tap a button to test audio"
-    @State private var interruptionHandler: NSObject?
+    @State private var interruptionObserver: NSObjectProtocol?
+    @State private var routeChangeObserver: NSObjectProtocol?
 
     var body: some View {
         VStack(spacing: 30) {
@@ -74,6 +75,14 @@ struct ContentView: View {
         .onAppear {
             initializeEngines()
         }
+        .onDisappear {
+            if let obs = interruptionObserver {
+                NotificationCenter.default.removeObserver(obs)
+            }
+            if let obs = routeChangeObserver {
+                NotificationCenter.default.removeObserver(obs)
+            }
+        }
     }
 
     private func initializeEngines() {
@@ -88,7 +97,7 @@ struct ContentView: View {
                 try session.setActive(true)
 
                 // Register for interruption and route change notifications
-                NotificationCenter.default.addObserver(
+                interruptionObserver = NotificationCenter.default.addObserver(
                     forName: AVAudioSession.interruptionNotification,
                     object: session,
                     queue: .main
@@ -98,7 +107,7 @@ struct ContentView: View {
                     }
                 }
 
-                NotificationCenter.default.addObserver(
+                routeChangeObserver = NotificationCenter.default.addObserver(
                     forName: AVAudioSession.routeChangeNotification,
                     object: session,
                     queue: .main
