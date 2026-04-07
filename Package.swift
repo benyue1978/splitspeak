@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "splitspeak",
-    platforms: [.iOS(.v17)],
+    platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "SCTCore", targets: ["SCTCore"])
     ],
