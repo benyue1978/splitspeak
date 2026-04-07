@@ -36,3 +36,11 @@ targets:
       - target: SCTCore
     settings:
       GENERATE_INFOPLIST_FILE: YES
+  SCTPipeline:
+    type: framework
+    platform: iOS
+    sources: [Modules/SCTPipeline/Sources]
+    dependencies:
+      - target: SCTCore
+    settings:
+      GENERATE_INFOPLIST_FILE: YES

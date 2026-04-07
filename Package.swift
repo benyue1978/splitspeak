@@ -7,7 +7,8 @@ let package = Package(
     products: [
         .library(name: "SCTCore", targets: ["SCTCore"]),
         .library(name: "SCTAudio", targets: ["SCTAudio"]),
-        .library(name: "SCTConversation", targets: ["SCTConversation"])
+        .library(name: "SCTConversation", targets: ["SCTConversation"]),
+        .library(name: "SCTPipeline", targets: ["SCTPipeline"])
     ],
     targets: [
         .target(name: "SCTCore", path: "Modules/SCTCore/Sources"),
@@ -15,6 +16,8 @@ let package = Package(
         .target(name: "SCTAudio", dependencies: ["SCTCore"], path: "Modules/SCTAudio/Sources"),
         .testTarget(name: "SCTAudioTests", dependencies: ["SCTAudio"], path: "Modules/SCTAudio/Tests"),
         .target(name: "SCTConversation", dependencies: ["SCTCore"], path: "Modules/SCTConversation/Sources"),
-        .testTarget(name: "SCTConversationTests", dependencies: ["SCTConversation"], path: "Modules/SCTConversation/Tests")
+        .testTarget(name: "SCTConversationTests", dependencies: ["SCTConversation"], path: "Modules/SCTConversation/Tests"),
+        .target(name: "SCTPipeline", dependencies: ["SCTCore"], path: "Modules/SCTPipeline/Sources"),
+        .testTarget(name: "SCTPipelineTests", dependencies: ["SCTPipeline"], path: "Modules/SCTPipeline/Tests")
     ]
 )
