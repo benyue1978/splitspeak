@@ -57,3 +57,13 @@ targets:
       - target: SCTCore
     settings:
       GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  splitspeak:
+    build:
+      targets:
+        splitspeak: all
+    run:
+      config: Debug
+    archive:
+      config: Release

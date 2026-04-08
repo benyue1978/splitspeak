@@ -13,31 +13,36 @@ public enum StereoOutputError: Error, Sendable {
 
 /// Manages stereo audio output to left and right channels using AVAudioEngine.
 ///
-/// This sink verifies the ability to independently route audio to each ear on a real iOS device.
-/// Use cases:
+/// This sink supports:
 /// - Left channel only: plays audio only in the left ear
 /// - Right channel only: plays audio only in the right ear
 /// - Stereo: plays audio in both ears (same content)
-public actor StereoOutputSink {
-    // Note: AVAudioEngine and AVAudioPlayerNode are Sendable on Apple platforms
+/// - Full-duplex capture + playback when eventBus is provided
+public final class StereoOutputSink: @unchecked Sendable {
     private let engine: AVAudioEngine
     private var playerNode: AVAudioPlayerNode?
     private var isConfigured = false
-    // Keep buffer alive during playback - only one buffer at a time supported
     private var scheduledBuffer: AVAudioPCMBuffer?
+    private let audioQueue = DispatchQueue(label: "com.splitspeak.stereooutput", qos: .userInteractive)
 
     /// Default sample rate for audio playback
     public static let defaultSampleRate: Double = 44100
+
+    private var eventBus: EventBus?
+    private var isCapturing = false
 
     public init() {
         self.engine = AVAudioEngine()
     }
 
-    /// Starts the audio engine. Must be called before playing audio.
-    /// Safe to call multiple times - will no-op if already running.
+    /// Starts the audio engine in playback-only mode (stereo).
     public func start() throws {
-        guard !engine.isRunning else { return }
+        try start(category: .playback)
+    }
 
+    /// Starts the audio engine with a specific category.
+    /// - Parameter category: The audio session category to use.
+    private func start(category: AVAudioSession.Category) throws {
         // Clean up any existing player node
         if let existingNode = playerNode {
             existingNode.stop()
@@ -48,8 +53,9 @@ public actor StereoOutputSink {
         let node = AVAudioPlayerNode()
         engine.attach(node)
 
-        // Connect to main mixer with default format
-        engine.connect(node, to: engine.mainMixerNode, format: nil)
+        // Explicitly specify stereo format
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)
+        engine.connect(node, to: engine.mainMixerNode, format: stereoFormat)
 
         engine.prepare()
         try engine.start()
@@ -57,25 +63,261 @@ public actor StereoOutputSink {
         isConfigured = true
     }
 
+    /// Switches the audio session to .playAndRecord mode and starts capture.
+    /// Full teardown and rebuild to ensure clean state.
+    public func switchToPlayAndRecordMode() throws {
+        let session = AVAudioSession.sharedInstance()
+
+        // Full engine teardown
+        audioQueue.sync {
+            playerNode?.stop()
+            engine.stop()
+            if let node = playerNode {
+                engine.detach(node)
+            }
+            playerNode = nil
+            scheduledBuffer = nil
+            isConfigured = false
+        }
+        isCapturing = false
+
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Deactivate session completely
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            Thread.sleep(forTimeInterval: 0.05)
+        } catch {
+            // Ignore - session might already be inactive
+        }
+
+        // Set new category and activate
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+        try session.setActive(true)
+
+        // Give hardware a moment to settle with new session
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Rebuild engine from scratch
+        try rebuildEngine(category: .playAndRecord)
+
+        // Start capture
+        do {
+            try startCaptureChecked()
+        } catch {
+            print("StereoOutputSink: capture setup failed: \(error)")
+        }
+    }
+
+    /// Switches the audio session back to .playback mode for stereo output.
+    /// Full teardown and rebuild to ensure clean state.
+    public func switchToPlaybackMode() throws {
+        let session = AVAudioSession.sharedInstance()
+
+        // Full engine teardown
+        audioQueue.sync {
+            playerNode?.stop()
+            engine.stop()
+            if let node = playerNode {
+                engine.detach(node)
+            }
+            playerNode = nil
+            scheduledBuffer = nil
+            isConfigured = false
+        }
+        isCapturing = false
+
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Deactivate session completely
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            Thread.sleep(forTimeInterval: 0.05)
+        } catch {
+            // Ignore - session might already be inactive
+        }
+
+        // Set new category and activate
+        try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
+
+        // Give hardware a moment to settle
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // Rebuild engine from scratch
+        try rebuildEngine(category: .playback)
+    }
+
+    /// Rebuilds the audio engine with a fresh player node.
+    private func rebuildEngine(category: AVAudioSession.Category) throws {
+        let node = AVAudioPlayerNode()
+        engine.attach(node)
+
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)
+        engine.connect(node, to: engine.mainMixerNode, format: stereoFormat)
+
+        engine.prepare()
+        try engine.start()
+        playerNode = node
+        isConfigured = true
+    }
+
+    /// Starts capturing audio from the mic. Throws on format invalid.
+    private func startCaptureChecked() throws {
+        guard let eventBus = eventBus, !isCapturing else { return }
+
+        let inputNode = engine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+
+        guard format.channelCount > 0 && format.sampleRate > 0 else {
+            throw StereoOutputError.invalidSampleRate
+        }
+
+        isCapturing = true
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            let frameCount = Int(buffer.frameLength)
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+
+            let data = Data(bytes: channelData, count: frameCount * MemoryLayout<Float>.size)
+
+            Task { @MainActor in
+                await eventBus.publish(.audioCaptured(data))
+            }
+        }
+    }
+
+    /// Starts capturing audio from the mic (no-throw version for internal use).
+    private func startCapture() {
+        try? startCaptureChecked()
+    }
+
+    /// Stops capturing audio.
+    public func stopCapture() {
+        guard isCapturing else { return }
+        isCapturing = false
+
+        if engine.isRunning {
+            engine.inputNode.removeTap(onBus: 0)
+        }
+    }
+
     /// Stops the audio engine and releases resources.
     public func stop() {
-        playerNode?.stop()
-        engine.stop()
-        if let node = playerNode {
-            engine.detach(node)
+        stopCapture()
+        audioQueue.sync {
+            playerNode?.stop()
+            engine.stop()
+            if let node = playerNode {
+                engine.detach(node)
+            }
+            playerNode = nil
+            scheduledBuffer = nil
+            isConfigured = false
         }
-        playerNode = nil
-        scheduledBuffer = nil
-        isConfigured = false
+    }
+
+    // MARK: - EventBus Integration
+
+    private var listenerTask: Task<Void, Never>?
+
+    /// Creates a StereoOutputSink that subscribes to ttsProduced events from EventBus.
+    public convenience init(eventBus: EventBus) {
+        self.init()
+        self.eventBus = eventBus
+        let sampleRate = StereoOutputSink.defaultSampleRate
+        listenerTask = Task { [weak self, eventBus, sampleRate] in
+            guard let sink = self else { return }
+            let stream = await eventBus.subscribe()
+            for await event in stream {
+                if case .ttsProduced(let audioData, let targetChannel) = event {
+                    let leftData = targetChannel == .left ? audioData : Data()
+                    let rightData = targetChannel == .right ? audioData : Data()
+                    await sink.playStereoOnQueue(leftData: leftData, rightData: rightData, sampleRate: sampleRate)
+                }
+            }
+        }
+    }
+
+    /// Plays stereo audio on the serial audio queue.
+    private func playStereoOnQueue(leftData: Data, rightData: Data, sampleRate: Double) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            audioQueue.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                Task {
+                    do {
+                        try await self.playStereoSync(leftData: leftData, rightData: rightData, sampleRate: sampleRate)
+                    } catch {
+                        print("StereoOutputSink play error: \(error)")
+                    }
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    /// Synchronous playStereo that must be called on audioQueue.
+    private func playStereoSync(leftData: Data, rightData: Data, sampleRate: Double) async throws {
+        guard isConfigured, let playerNode else {
+            throw StereoOutputError.engineNotRunning
+        }
+
+        let leftFrameCount = leftData.count / MemoryLayout<Float>.size
+        let rightFrameCount = rightData.count / MemoryLayout<Float>.size
+        let frameCount: Int
+        if leftFrameCount == 0 {
+            frameCount = rightFrameCount
+        } else if rightFrameCount == 0 {
+            frameCount = leftFrameCount
+        } else {
+            frameCount = min(leftFrameCount, rightFrameCount)
+        }
+
+        guard frameCount > 0 else {
+            throw StereoOutputError.bufferCreationFailed
+        }
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            throw StereoOutputError.bufferCreationFailed
+        }
+
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+
+        guard let leftChannel = buffer.floatChannelData?[0],
+              let rightChannel = buffer.floatChannelData?[1] else {
+            throw StereoOutputError.bufferCreationFailed
+        }
+
+        leftData.withUnsafeBytes { leftPtr in
+            rightData.withUnsafeBytes { rightPtr in
+                let leftFloats = leftPtr.bindMemory(to: Float.self)
+                let rightFloats = rightPtr.bindMemory(to: Float.self)
+
+                for frame in 0..<Int(frameCount) {
+                    if leftFrameCount > 0 {
+                        leftChannel[frame] = leftFloats[frame]
+                    }
+                    if rightFrameCount > 0 {
+                        rightChannel[frame] = rightFloats[frame]
+                    }
+                }
+            }
+        }
+
+        scheduledBuffer = buffer
+        _ = await withCheckedContinuation { continuation in
+            playerNode.scheduleBuffer(buffer) {
+                continuation.resume()
+            }
+            playerNode.play()
+        }
     }
 
     /// Plays a tone burst on the specified channel.
-    ///
-    /// - Parameters:
-    ///   - channel: The target channel for audio output (.left or .right)
-    ///   - frequencyHz: Frequency of the tone in Hz (default 440 = A4)
-    ///   - durationSeconds: Duration of the tone (default 0.5s)
-    ///   - sampleRate: Sample rate for tone generation (default 44100)
     public func playTone(
         on channel: AudioChannel,
         frequencyHz: Double = 440,
@@ -89,11 +331,11 @@ public actor StereoOutputSink {
         let frameCount = AVAudioFrameCount(sampleRate * durationSeconds)
 
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
             throw StereoOutputError.bufferCreationFailed
         }
 
-        buffer.frameLength = frameCount
+        buffer.frameLength = AVAudioFrameCount(frameCount)
 
         guard let leftChannel = buffer.floatChannelData?[0],
               let rightChannel = buffer.floatChannelData?[1] else {
@@ -113,10 +355,8 @@ public actor StereoOutputSink {
             }
         }
 
-        // Keep buffer alive during playback
         scheduledBuffer = buffer
 
-        // Use completion handler for reliable playback
         _ = await withCheckedContinuation { continuation in
             playerNode.scheduleBuffer(buffer) {
                 continuation.resume()
@@ -125,12 +365,7 @@ public actor StereoOutputSink {
         }
     }
 
-    /// Plays stereo audio where left and right channels contain independent audio data.
-    ///
-    /// - Parameters:
-    ///   - leftData: Audio data (linear PCM Float32) for the left channel
-    ///   - rightData: Audio data (linear PCM Float32) for the right channel
-    ///   - sampleRate: Sample rate of the audio data
+    /// Plays stereo audio.
     public func playStereo(
         leftData: Data,
         rightData: Data,
@@ -140,18 +375,27 @@ public actor StereoOutputSink {
             throw StereoOutputError.engineNotRunning
         }
 
-        let frameCount = AVAudioFrameCount(min(leftData.count, rightData.count) / MemoryLayout<Float>.size)
+        let leftFrameCount = leftData.count / MemoryLayout<Float>.size
+        let rightFrameCount = rightData.count / MemoryLayout<Float>.size
+        let frameCount: Int
+        if leftFrameCount == 0 {
+            frameCount = rightFrameCount
+        } else if rightFrameCount == 0 {
+            frameCount = leftFrameCount
+        } else {
+            frameCount = min(leftFrameCount, rightFrameCount)
+        }
 
         guard frameCount > 0 else {
             throw StereoOutputError.bufferCreationFailed
         }
 
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
             throw StereoOutputError.bufferCreationFailed
         }
 
-        buffer.frameLength = frameCount
+        buffer.frameLength = AVAudioFrameCount(frameCount)
 
         guard let leftChannel = buffer.floatChannelData?[0],
               let rightChannel = buffer.floatChannelData?[1] else {
@@ -164,8 +408,12 @@ public actor StereoOutputSink {
                 let rightFloats = rightPtr.bindMemory(to: Float.self)
 
                 for frame in 0..<Int(frameCount) {
-                    leftChannel[frame] = leftFloats[frame]
-                    rightChannel[frame] = rightFloats[frame]
+                    if leftFrameCount > 0 {
+                        leftChannel[frame] = leftFloats[frame]
+                    }
+                    if rightFrameCount > 0 {
+                        rightChannel[frame] = rightFloats[frame]
+                    }
                 }
             }
         }
@@ -181,8 +429,10 @@ public actor StereoOutputSink {
 
     /// Stops current playback without stopping the engine.
     public func stopPlayback() {
-        playerNode?.stop()
-        scheduledBuffer = nil
+        audioQueue.sync {
+            playerNode?.stop()
+            scheduledBuffer = nil
+        }
     }
 
     /// Returns whether the audio engine is currently running.

@@ -2,6 +2,20 @@
 
 Stereo Conversational Translator (SCT) - An iOS app enabling real-time, two-way translation using stereo audio separation (Left/Right channels) for two users sharing a single pair of headphones.
 
+## Current Limitation / Blocker
+
+**`.playAndRecord` forces Bluetooth headphones into mono mode.**
+
+Using `AVAudioSession.Category.playAndRecord` (required for simultaneous capture and playback) causes Bluetooth A2DP headphones to operate in mono/single-channel mode. This breaks the core stereo separation premise — each participant would receive both channels in both ears, defeating the purpose of left/right channel separation.
+
+This is an iOS/AVAudioSession behavior limitation, not a code issue. Potential workarounds to explore:
+
+- Use a wired headset (avoids A2DP compression)
+- Route audio differently (e.g., separate Bluetooth devices per user)
+- Accept mono Bluetooth and explore other separation mechanisms (spatial audio, etc.)
+
+**Status:** Paused — exploring alternatives. Repo left as-is for reference.
+
 ## Architecture
 
 ```
